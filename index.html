@@ -176,6 +176,15 @@ function makeEnemy(x, y, dir, range, speed, type) {
 }
 function goomba(x, y, dir, range, speed) { return makeEnemy(x, y, dir, range, speed, 'goomba'); }
 function turtle(x, y, dir, range, speed) { return makeEnemy(x, y, dir, range, speed, 'turtle'); }
+function bat(x, y, dir, range, speed, amplitude) {
+  return {x, y, baseY:y, w:30, h:24, dir, range, speed, amplitude: amplitude||36, phase:Math.random()*Math.PI*2, alive:true, type:'bat'};
+}
+function spike(x, y, dir, range, speed) {
+  return {x, y, baseY:y, w:32, h:26, dir, range, speed, alive:true, type:'spike', hopPhase:Math.random()*Math.PI*2, hopSpeed:0.11+Math.random()*0.04};
+}
+function plant(x, groundY) {
+  return {x, y:groundY, baseY:groundY, hideY:groundY+42, w:26, h:42, dir:1, range:[x,x], speed:0, alive:true, type:'plant', timer:Math.floor(Math.random()*220), visible:false};
+}
 function makeCoins(arr) {
   return arr.map(c => ({...c, r:10, taken:false}));
 }
@@ -266,6 +275,9 @@ const STAGE_DATA = {
       turtle(2150, GROUND_Y-32, 1, [1950,2400], 1.5),
       goomba(2700, GROUND_Y-32, -1, [2550,2950], 1.9),
       turtle(1180, 250-32, 1, [1160,1350], 1.4),
+      bat(760, GROUND_Y-140, 1, [700,820], 2.0, 45),
+      bat(1880, GROUND_Y-160, -1, [1820,1950], 2.0, 55),
+      plant(2900, GROUND_Y-40),
     ],
     flag: {x:3000, y:GROUND_Y-220, w:12, h:220},
     levelWidth: 3100,
@@ -315,6 +327,9 @@ const STAGE_DATA = {
       turtle(2300, GROUND_Y-32, -1, [2190,2500], 1.8),
       goomba(2700, GROUND_Y-32, 1, [2600,2900], 2.2),
       turtle(990, 260-32, 1, [970,1250], 1.5),
+      spike(450, GROUND_Y-40, 1, [350,580], 1.3),
+      spike(1850, GROUND_Y-40, -1, [1700,2000], 1.5),
+      plant(1250, GROUND_Y-40),
     ],
     flag: {x:3200, y:GROUND_Y-220, w:12, h:220},
     levelWidth: 3320,
@@ -364,6 +379,11 @@ const STAGE_DATA = {
       turtle(2800, GROUND_Y-32, -1, [2680,3050], 2.2),
       goomba(3200, GROUND_Y-32, 1, [3100,3350], 2.6),
       turtle(960, 240-32, 1, [940,1170], 1.8),
+      bat(500, GROUND_Y-160, -1, [300,650], 2.2, 50),
+      spike(1550, GROUND_Y-40, 1, [1450,1750], 1.6),
+      plant(2250, GROUND_Y-40),
+      bat(2900, GROUND_Y-180, -1, [2750,3100], 2.4, 60),
+      spike(3450, GROUND_Y-40, -1, [3370,3650], 1.8),
     ],
     flag: {x:3620, y:GROUND_Y-220, w:12, h:220},
     levelWidth: 3700,
@@ -594,16 +614,44 @@ function update() {
     } else if (e.type === 'turtle' && e.state === 'shell-kicked') {
       e.x += e.dir * 9;
       if (e.x < -50 || e.x > level.levelWidth + 50) e.alive = false;
+    } else if (e.type === 'bat') {
+      e.phase += 0.07;
+      e.y = e.baseY + Math.sin(e.phase) * e.amplitude;
+      e.x += e.dir * e.speed;
+      if (e.x < e.range[0] || e.x + e.w > e.range[1]) e.dir *= -1;
+    } else if (e.type === 'spike') {
+      e.hopPhase += e.hopSpeed;
+      e.y = e.baseY - Math.abs(Math.sin(e.hopPhase))*18 - Math.abs(Math.sin(e.hopPhase*2.7))*6;
+      e.x += e.dir * e.speed;
+      if (e.x < e.range[0] || e.x + e.w > e.range[1]) e.dir *= -1;
+    } else if (e.type === 'plant') {
+      e.timer++;
+      const t = e.timer % 220;
+      if (t < 40) { e.y = e.hideY - (e.hideY-e.baseY)*(t/40); e.visible = true; }
+      else if (t < 140) { e.y = e.baseY + Math.sin(t*0.2)*3; e.visible = true; }
+      else if (t < 180) { e.y = e.baseY + (e.hideY-e.baseY)*((t-140)/40); e.visible = true; }
+      else { e.y = e.hideY; e.visible = false; }
     } else {
       e.x += e.dir * (e.speed || 1.5);
       if (e.x < e.range[0] || e.x + e.w > e.range[1]) e.dir *= -1;
     }
 
+    if (e.type === 'plant' && !e.visible) continue;
+
     if (!player.dead && rectsOverlap(player, e)) {
       const playerBottom = player.y + player.h;
       const fallingOnTop = player.vy > 0 && (playerBottom - player.vy) <= e.y + 10;
 
-      if (e.type === 'turtle' && e.state === 'walk') {
+      if (e.type === 'spike' || e.type === 'plant') {
+        if (player.invuln === 0) {
+          player.invuln = 60;
+          lives--;
+          updateHUD();
+          player.vx = (player.x < e.x ? -1 : 1) * 6;
+          player.vy = -7;
+          if (lives <= 0) killPlayer();
+        }
+      } else if (e.type === 'turtle' && e.state === 'walk') {
         if (fallingOnTop) {
           e.state = 'shell-idle';
           e.shellTimer = 240;
@@ -756,7 +804,109 @@ function drawCoin(c) {
 
 function drawEnemy(e) {
   if (!e.alive) return;
-  if (e.type === 'turtle') drawTurtle(e); else drawGoomba(e);
+  if (e.type === 'plant' && !e.visible) return;
+  if (e.type === 'turtle') drawTurtle(e);
+  else if (e.type === 'bat') drawBat(e);
+  else if (e.type === 'spike') drawSpike(e);
+  else if (e.type === 'plant') drawPlant(e);
+  else drawGoomba(e);
+}
+
+function drawBat(e) {
+  const x0 = e.x - camX;
+  const flap = Math.sin(e.phase*3) * 9;
+  ctx.fillStyle = '#4a2f5c';
+  ctx.beginPath();
+  ctx.moveTo(x0+e.w/2-3, e.y+e.h/2);
+  ctx.lineTo(x0-8, e.y+e.h/2-8-flap);
+  ctx.lineTo(x0+2, e.y+e.h/2+7);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x0+e.w/2+3, e.y+e.h/2);
+  ctx.lineTo(x0+e.w+8, e.y+e.h/2-8-flap);
+  ctx.lineTo(x0+e.w-2, e.y+e.h/2+7);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#2e1f38';
+  ctx.beginPath();
+  ctx.ellipse(x0+e.w/2, e.y+e.h/2, e.w/2-6, e.h/2-3, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x0+e.w/2-6, e.y+e.h/2-6);
+  ctx.lineTo(x0+e.w/2-9, e.y+e.h/2-14);
+  ctx.lineTo(x0+e.w/2-3, e.y+e.h/2-6);
+  ctx.moveTo(x0+e.w/2+6, e.y+e.h/2-6);
+  ctx.lineTo(x0+e.w/2+9, e.y+e.h/2-14);
+  ctx.lineTo(x0+e.w/2+3, e.y+e.h/2-6);
+  ctx.fill();
+  ctx.fillStyle = '#ff5c5c';
+  ctx.beginPath();
+  ctx.arc(x0+e.w/2-4, e.y+e.h/2-1, 2, 0, Math.PI*2);
+  ctx.arc(x0+e.w/2+4, e.y+e.h/2-1, 2, 0, Math.PI*2);
+  ctx.fill();
+}
+
+function drawSpike(e) {
+  const x0 = e.x - camX;
+  const cx = x0+e.w/2, cy = e.y+e.h/2;
+  const rBody = e.w/2-4, rSpike = e.w/2+7;
+  ctx.fillStyle = '#3a1f6b';
+  for (let i=0;i<8;i++) {
+    const ang = (Math.PI*2/8)*i + e.hopPhase*0.6;
+    const x2 = cx+Math.cos(ang-0.16)*rBody, y2 = cy+Math.sin(ang-0.16)*rBody;
+    const x3 = cx+Math.cos(ang+0.16)*rBody, y3 = cy+Math.sin(ang+0.16)*rBody;
+    const xt = cx+Math.cos(ang)*rSpike, yt = cy+Math.sin(ang)*rSpike;
+    ctx.beginPath();
+    ctx.moveTo(x2,y2); ctx.lineTo(xt,yt); ctx.lineTo(x3,y3); ctx.closePath();
+    ctx.fill();
+  }
+  ctx.fillStyle = '#5b3aa0';
+  ctx.beginPath();
+  ctx.arc(cx, cy, rBody, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#ffeb3b';
+  ctx.beginPath();
+  ctx.arc(cx-5, cy-2, 3, 0, Math.PI*2);
+  ctx.arc(cx+5, cy-2, 3, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.arc(cx-5, cy-2, 1.3, 0, Math.PI*2);
+  ctx.arc(cx+5, cy-2, 1.3, 0, Math.PI*2);
+  ctx.fill();
+}
+
+function drawPlant(e) {
+  const x0 = e.x - camX;
+  const lean = Math.max(-8, Math.min(8, (player.x - e.x) * 0.05));
+  const headY = e.y;
+  const baseBottom = e.hideY + e.h;
+  ctx.strokeStyle = '#2f6b2f';
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.moveTo(x0+e.w/2, baseBottom);
+  ctx.quadraticCurveTo(x0+e.w/2+lean*0.5, (headY+baseBottom)/2, x0+e.w/2+lean, headY+10);
+  ctx.stroke();
+  const squash = 1 + Math.sin(e.timer*0.2)*0.06;
+  ctx.fillStyle = '#c0392b';
+  ctx.beginPath();
+  ctx.ellipse(x0+e.w/2+lean, headY, (e.w/2)*squash, e.h/2.6, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  for (let i=-2;i<=2;i++) {
+    ctx.beginPath();
+    ctx.moveTo(x0+e.w/2+lean+i*5, headY);
+    ctx.lineTo(x0+e.w/2+lean+i*5-2, headY+6);
+    ctx.lineTo(x0+e.w/2+lean+i*5+2, headY+6);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.fillStyle = '#ffeb3b';
+  ctx.beginPath();
+  ctx.arc(x0+e.w/2+lean-6, headY-6, 2.5, 0, Math.PI*2);
+  ctx.arc(x0+e.w/2+lean+6, headY-6, 2.5, 0, Math.PI*2);
+  ctx.fill();
 }
 
 function drawGoomba(e) {
