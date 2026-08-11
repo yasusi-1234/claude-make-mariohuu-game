@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>スーパー なんちゃってマリオ</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: linear-gradient(#7ec0ee, #cdeaff);
+    overflow: hidden;
+    font-family: "Trebuchet MS", "Hiragino Kaku Gothic ProN", sans-serif;
+    height: 100%;
+    touch-action: none;
+    overscroll-behavior: none;
+  }
+  #wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    user-select: none;
+  }
+  @media (pointer: coarse) {
+    #wrap { justify-content: flex-start; padding-top: 16px; box-sizing: border-box; }
+  }
+  #hud {
+    width: 800px;
+    max-width: 100%;
+    display: flex;
+    justify-content: space-between;
+    color: #fff;
+    font-weight: bold;
+    font-size: 20px;
+    text-shadow: 2px 2px 0 #000;
+    padding: 4px 8px;
+    box-sizing: border-box;
+  }
+  canvas {
+    background: #7ec0ee;
+    border: 4px solid #3a2a1a;
+    border-radius: 4px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    image-rendering: pixelated;
+    max-width: 100%;
+    height: auto;
+    display: block;
+  }
+  #msg {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #fff;
+    background: rgba(0,0,0,0.6);
+    padding: 24px 40px;
+    border-radius: 12px;
+    font-size: 28px;
+    text-align: center;
+    white-space: nowrap;
+    display: none;
+  }
+  @media (max-width: 480px) {
+    #msg {
+      font-size: 16px;
+      padding: 14px 18px;
+      white-space: normal;
+      width: 80%;
+    }
+  }
+  #msg button {
+    display: block;
+    margin: 16px auto 0;
+    font-size: 18px;
+    padding: 8px 20px;
+    border-radius: 8px;
+    border: none;
+    background: #ffcc33;
+    cursor: pointer;
+    font-weight: bold;
+  }
+  #help {
+    color: #234;
+    margin-top: 8px;
+    font-size: 14px;
+    text-shadow: none;
+    background: rgba(255,255,255,0.6);
+    padding: 4px 10px;
+    border-radius: 8px;
+  }
+  #touchControls {
+    display: none;
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    padding: 16px;
+    box-sizing: border-box;
+    justify-content: space-between;
+    align-items: flex-end;
+    pointer-events: none;
+    z-index: 10;
+  }
+  .tbtn {
+    pointer-events: auto;
+    width: 68px;
+    height: 68px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.35);
+    border: 2px solid rgba(255,255,255,0.7);
+    color: #fff;
+    font-size: 28px;
+    font-weight: bold;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: none;
+  }
+  .tbtn:active, .tbtn.pressed {
+    background: rgba(255,255,255,0.65);
+  }
+  #dpad {
+    display: flex;
+    gap: 14px;
+  }
+  #jumpBtn {
+    width: 84px;
+    height: 84px;
+    font-size: 16px;
+  }
+  @media (pointer: coarse) {
+    #touchControls { display: flex; }
+    #help { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud">
+    <div>❤️ <span id="lives">3</span> &nbsp; 🪙 <span id="coins">0</span></div>
+    <div>SCORE: <span id="score">0</span></div>
+  </div>
+  <div style="position:relative;">
+    <canvas id="game" width="800" height="450"></canvas>
+    <div id="msg">
+      <div id="msgText"></div>
+      <button id="msgBtn">もう一度</button>
+    </div>
+  </div>
+  <div id="help">← → : 移動　／　Space または ↑ : ジャンプ　／　敵は上から踏むと倒せる</div>
+</div>
+
+<div id="touchControls">
+  <div id="dpad">
+    <div class="tbtn" id="btnLeft">◀</div>
+    <div class="tbtn" id="btnRight">▶</div>
+  </div>
+  <div class="tbtn" id="jumpBtn">JUMP</div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+const GRAVITY = 0.55;
+const GROUND_Y = H - 48;
+
+// ---------- レベルデータ ----------
+// platforms: x, y, w, h
+function buildLevel() {
+  const platforms = [
+    {x:0, y:GROUND_Y, w:1400, h:48},
+    {x:1500, y:GROUND_Y, w:1200, h:48},
+    {x:300, y:320, w:100, h:20},
+    {x:480, y:260, w:100, h:20},
+    {x:650, y:200, w:80, h:20},
+    {x:900, y:330, w:120, h:20},
+    {x:1100, y:280, w:100, h:20},
+    {x:1250, y:220, w:100, h:20},
+    {x:1600, y:330, w:100, h:20},
+    {x:1780, y:280, w:100, h:20},
+    {x:1960, y:230, w:100, h:20},
+    {x:2150, y:330, w:150, h:20},
+  ];
+  const gaps = [ {x:1400, w:100} ]; // 穴(落下ゾーン)
+  const coins = [
+    {x:330,y:280},{x:360,y:280},
+    {x:510,y:220},{x:540,y:220},
+    {x:670,y:160},
+    {x:930,y:290},{x:960,y:290},{x:990,y:290},
+    {x:1130,y:240},
+    {x:1280,y:180},{x:1310,y:180},
+    {x:1630,y:290},{x:1660,y:290},
+    {x:1810,y:240},
+    {x:1990,y:190},{x:2020,y:190},
+    {x:2200,y:290},{x:2230,y:290},{x:2260,y:290},
+  ].map(c => ({...c, r:10, taken:false}));
+  const enemies = [
+    {x:500, y:GROUND_Y-32, w:32, h:32, dir:-1, range:[380,650], alive:true},
+    {x:1000, y:GROUND_Y-32, w:32, h:32, dir:1, range:[950,1250], alive:true},
+    {x:1650, y:GROUND_Y-32, w:32, h:32, dir:-1, range:[1550,1780], alive:true},
+    {x:2000, y:GROUND_Y-32, w:32, h:32, dir:1, range:[1950,2250], alive:true},
+    {x:920, y:330-32, w:32, h:32, dir:1, range:[900,1000], alive:true},
+  ];
+  const flag = {x:2600, y:GROUND_Y-220, w:12, h:220};
+  const levelWidth = 2750;
+  return {platforms, gaps, coins, enemies, flag, levelWidth};
+}
+
+let level = buildLevel();
+
+// ---------- プレイヤー ----------
+function initPlayer() {
+  return {
+    x: 60, y: GROUND_Y-40, w:28, h:40,
+    vx:0, vy:0,
+    onGround:false,
+    facing:1,
+    dead:false,
+    invuln:0,
+  };
+}
+let player = initPlayer();
+
+let keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['Space','ArrowUp','ArrowLeft','ArrowRight','ArrowDown'].includes(e.code)) e.preventDefault();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// --- タッチ操作ボタン ---
+function bindTouchButton(el, code) {
+  const press = ev => { ev.preventDefault(); keys[code] = true; el.classList.add('pressed'); };
+  const release = ev => { if (ev) ev.preventDefault(); keys[code] = false; el.classList.remove('pressed'); };
+  el.addEventListener('touchstart', press, {passive:false});
+  el.addEventListener('touchend', release, {passive:false});
+  el.addEventListener('touchcancel', release, {passive:false});
+  el.addEventListener('mousedown', press);
+  el.addEventListener('mouseup', release);
+  el.addEventListener('mouseleave', release);
+}
+bindTouchButton(document.getElementById('btnLeft'), 'ArrowLeft');
+bindTouchButton(document.getElementById('btnRight'), 'ArrowRight');
+bindTouchButton(document.getElementById('jumpBtn'), 'Space');
+
+let camX = 0;
+let score = 0, coinsCount = 0, lives = 3;
+let gameState = 'playing'; // playing, dead, win, gameover
+let jumpBuffer = false;
+
+const livesEl = document.getElementById('lives');
+const coinsEl = document.getElementById('coins');
+const scoreEl = document.getElementById('score');
+const msgEl = document.getElementById('msg');
+const msgText = document.getElementById('msgText');
+const msgBtn = document.getElementById('msgBtn');
+
+function updateHUD() {
+  livesEl.textContent = lives;
+  coinsEl.textContent = coinsCount;
+  scoreEl.textContent = score;
+}
+
+function rectsOverlap(a,b) {
+  return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+}
+
+function resetLevel(fullReset) {
+  level = buildLevel();
+  player = initPlayer();
+  camX = 0;
+  if (fullReset) { score = 0; coinsCount = 0; lives = 3; }
+  gameState = 'playing';
+  msgEl.style.display = 'none';
+  updateHUD();
+}
+
+function killPlayer() {
+  if (player.dead) return;
+  player.dead = true;
+  lives--;
+  updateHUD();
+  setTimeout(() => {
+    if (lives <= 0) {
+      gameState = 'gameover';
+      showMsg('ゲームオーバー... 😵', 'もう一度挑戦');
+    } else {
+      resetLevel(false);
+    }
+  }, 700);
+}
+
+function showMsg(text, btnText) {
+  msgText.textContent = text;
+  msgBtn.textContent = btnText;
+  msgEl.style.display = 'block';
+}
+
+msgBtn.addEventListener('click', () => {
+  resetLevel(true);
+});
+
+function update() {
+  if (gameState !== 'playing') return;
+
+  // --- 入力 ---
+  const speed = 4.2;
+  if (keys['ArrowLeft']) { player.vx = -speed; player.facing = -1; }
+  else if (keys['ArrowRight']) { player.vx = speed; player.facing = 1; }
+  else { player.vx *= 0.6; }
+
+  if ((keys['Space'] || keys['ArrowUp']) && player.onGround && !player.dead) {
+    player.vy = -11.5;
+    player.onGround = false;
+  }
+
+  if (!player.dead) {
+    player.vy += GRAVITY;
+    player.x += player.vx;
+    player.y += player.vy;
+  } else {
+    player.vy += GRAVITY;
+    player.y += player.vy;
+  }
+
+  // --- 地面との衝突判定(穴考慮) ---
+  player.onGround = false;
+  for (const p of level.platforms) {
+    if (rectsOverlap(player, p)) {
+      // 上からの着地
+      const prevBottom = player.y + player.h - player.vy;
+      if (player.vy >= 0 && prevBottom <= p.y + 1) {
+        player.y = p.y - player.h;
+        player.vy = 0;
+        player.onGround = true;
+      } else if (player.vy < 0 && player.y - player.vy >= p.y + p.h - 1) {
+        // 下から頭ぶつけ
+        player.y = p.y + p.h;
+        player.vy = 0;
+      } else {
+        // 横衝突
+        if (player.x + player.w/2 < p.x + p.w/2) {
+          player.x = p.x - player.w;
+        } else {
+          player.x = p.x + p.w;
+        }
+        player.vx = 0;
+      }
+    }
+  }
+
+  if (player.x < 0) player.x = 0;
+
+  // 落下死
+  if (player.y > H + 100) {
+    killPlayer();
+  }
+
+  // --- コイン ---
+  for (const c of level.coins) {
+    if (c.taken) continue;
+    const dx = (player.x+player.w/2) - c.x;
+    const dy = (player.y+player.h/2) - c.y;
+    if (Math.sqrt(dx*dx+dy*dy) < c.r + 16) {
+      c.taken = true;
+      coinsCount++;
+      score += 50;
+      updateHUD();
+    }
+  }
+
+  // --- 敵 ---
+  if (player.invuln > 0) player.invuln--;
+  for (const e of level.enemies) {
+    if (!e.alive) continue;
+    e.x += e.dir * 1.5;
+    if (e.x < e.range[0] || e.x + e.w > e.range[1]) e.dir *= -1;
+
+    if (!player.dead && rectsOverlap(player, e)) {
+      const playerBottom = player.y + player.h;
+      const fallingOnTop = player.vy > 0 && (playerBottom - player.vy) <= e.y + 10;
+      if (fallingOnTop) {
+        e.alive = false;
+        player.vy = -8;
+        score += 100;
+        updateHUD();
+      } else if (player.invuln === 0) {
+        player.invuln = 60;
+        lives--;
+        updateHUD();
+        player.vx = (player.x < e.x ? -1 : 1) * 6;
+        player.vy = -7;
+        if (lives <= 0) {
+          killPlayer();
+        }
+      }
+    }
+  }
+
+  // --- ゴール判定 ---
+  const flag = level.flag;
+  if (player.x > flag.x) {
+    gameState = 'win';
+    score += 500;
+    updateHUD();
+    showMsg('🎉 ゴール！クリア！ 🎉  SCORE: ' + score, 'もう一度遊ぶ');
+  }
+
+  // --- カメラ ---
+  camX = Math.max(0, Math.min(player.x - W/2 + player.w/2, level.levelWidth - W));
+}
+
+// ---------- 描画 ----------
+function drawCloud(x,y,scale) {
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.beginPath();
+  ctx.arc(x,y,20*scale,0,Math.PI*2);
+  ctx.arc(x+22*scale,y-10*scale,24*scale,0,Math.PI*2);
+  ctx.arc(x+46*scale,y,20*scale,0,Math.PI*2);
+  ctx.fill();
+}
+
+function drawGround(p) {
+  const x0 = p.x - camX;
+  ctx.fillStyle = '#8b5a2b';
+  ctx.fillRect(x0, p.y, p.w, p.h);
+  ctx.fillStyle = '#4caf50';
+  ctx.fillRect(x0, p.y, p.w, 10);
+  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+  for (let i=0; i<p.w; i+=24) {
+    ctx.fillRect(x0+i, p.y+10, 2, p.h-10);
+  }
+}
+
+function drawPlatform(p) {
+  const x0 = p.x - camX;
+  ctx.fillStyle = '#c97b3d';
+  ctx.fillRect(x0, p.y, p.w, p.h);
+  ctx.fillStyle = '#e0985a';
+  ctx.fillRect(x0, p.y, p.w, 6);
+}
+
+function drawCoin(c) {
+  if (c.taken) return;
+  const x0 = c.x - camX;
+  const bob = Math.sin(Date.now()/200 + c.x) * 3;
+  ctx.fillStyle = '#ffd54a';
+  ctx.beginPath();
+  ctx.arc(x0, c.y+bob, c.r, 0, Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle = '#c98f13';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function drawEnemy(e) {
+  if (!e.alive) return;
+  const x0 = e.x - camX;
+  ctx.fillStyle = '#8d4a2f';
+  ctx.beginPath();
+  ctx.ellipse(x0+e.w/2, e.y+e.h/2+4, e.w/2, e.h/2-2, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#3a1f12';
+  ctx.beginPath();
+  ctx.arc(x0+e.w/2-7, e.y+e.h/2, 4, 0, Math.PI*2);
+  ctx.arc(x0+e.w/2+7, e.y+e.h/2, 4, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(x0+e.w/2-7, e.y+e.h/2, 2, 0, Math.PI*2);
+  ctx.arc(x0+e.w/2+7, e.y+e.h/2, 2, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#3a1f12';
+  ctx.fillRect(x0+4, e.y+e.h-6, 8, 6);
+  ctx.fillRect(x0+e.w-12, e.y+e.h-6, 8, 6);
+}
+
+function drawFlag(f) {
+  const x0 = f.x - camX;
+  ctx.fillStyle = '#aaa';
+  ctx.fillRect(x0, f.y, f.w, f.h);
+  ctx.fillStyle = '#e63946';
+  ctx.beginPath();
+  ctx.moveTo(x0+f.w, f.y+8);
+  ctx.lineTo(x0+f.w+34, f.y+22);
+  ctx.lineTo(x0+f.w, f.y+36);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#deb04a';
+  ctx.beginPath();
+  ctx.arc(x0+f.w/2, f.y, 8, 0, Math.PI*2);
+  ctx.fill();
+}
+
+function drawPlayer() {
+  if (player.invuln > 0 && Math.floor(player.invuln/4)%2===0) return; // 点滅
+  const x0 = player.x - camX;
+  ctx.save();
+  ctx.translate(x0+player.w/2, player.y+player.h/2);
+  if (player.dead) ctx.rotate(Math.PI);
+  ctx.translate(-player.w/2, -player.h/2);
+  // 体
+  ctx.fillStyle = '#e63946';
+  ctx.fillRect(0, 14, player.w, player.h-14);
+  // 頭
+  ctx.fillStyle = '#ffd6a5';
+  ctx.fillRect(4, 0, player.w-8, 16);
+  // 帽子
+  ctx.fillStyle = '#e63946';
+  ctx.fillRect(0, 0, player.w, 8);
+  ctx.fillRect(player.facing>0 ? player.w-6 : 0, 6, 10, 4);
+  // 目
+  ctx.fillStyle = '#222';
+  ctx.fillRect(player.facing>0 ? player.w-10 : 4, 6, 3, 3);
+  ctx.restore();
+}
+
+function draw() {
+  ctx.clearRect(0,0,W,H);
+
+  // 空 & 雲(パララックス)
+  drawCloud(80 - camX*0.3 % (W+200), 60, 1);
+  drawCloud(320 - camX*0.3 % (W+200), 100, 0.7);
+  drawCloud(600 - camX*0.3 % (W+200), 50, 1.2);
+
+  // 遠景の山
+  ctx.fillStyle = '#6fae6f';
+  for (let i=0;i<6;i++) {
+    const bx = i*400 - (camX*0.5 % 400) - 200;
+    ctx.beginPath();
+    ctx.moveTo(bx, GROUND_Y);
+    ctx.lineTo(bx+120, GROUND_Y-140);
+    ctx.lineTo(bx+240, GROUND_Y);
+    ctx.fill();
+  }
+
+  for (const p of level.platforms) {
+    if (p.y >= GROUND_Y) drawGround(p); else drawPlatform(p);
+  }
+  for (const c of level.coins) drawCoin(c);
+  for (const e of level.enemies) drawEnemy(e);
+  drawFlag(level.flag);
+  drawPlayer();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+updateHUD();
+loop();
+</script>
+</body>
+</html>
