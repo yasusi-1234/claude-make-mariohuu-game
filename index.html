@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>スーパー なんちゃってマリオ</title>
+<meta name="theme-color" content="#7ec0ee">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%237ec0ee'/%3E%3Crect x='20' y='40' width='60' height='40' fill='%23e63946'/%3E%3Crect x='30' y='20' width='40' height='24' fill='%23ffd6a5'/%3E%3Crect x='20' y='14' width='60' height='16' fill='%23e63946'/%3E%3C/svg%3E">
 <style>
   html, body {
     margin: 0;
@@ -207,6 +210,8 @@ function sfx(name) {
     case 'win': [523,659,784,1047,1319].forEach((f,i)=>beep(f,0.2,'square',0.15,i*0.14)); break;
     case 'gameover': [300,260,220,180].forEach((f,i)=>beep(f,0.22,'sawtooth',0.15,i*0.16)); break;
     case 'bosshit': beep(200,0.15,'square',0.2); beep(140,0.15,'square',0.18,0.08); break;
+    case 'powerup': beep(660,0.08,'triangle',0.14); beep(990,0.1,'triangle',0.13,0.07); beep(1320,0.12,'triangle',0.12,0.14); break;
+    case 'checkpoint': beep(700,0.1,'triangle',0.13); beep(900,0.12,'triangle',0.12,0.08); break;
     case 'achievement': [784,988,1175].forEach((f,i)=>beep(f,0.12,'triangle',0.14,i*0.09)); break;
   }
 }
@@ -247,6 +252,28 @@ function unlockAchievement(id, title) {
   achToastEl.style.display = 'block';
   clearTimeout(achToastTimer);
   achToastTimer = setTimeout(() => { achToastEl.style.display = 'none'; }, 3000);
+}
+const ALL_ACHIEVEMENT_IDS = [
+  'mario_stage1','mario_allClear','mario_bossDefeat','mario_noDamageStage','mario_kicks5','mario_coins50',
+  'shoot_firstWin','shoot_bossDefeat','shoot_enrageCalm','shoot_perfectWave','shoot_powerup10',
+  'rpg_firstKill','rpg_shopFriend','rpg_dungeon2','rpg_level10','rpg_trueHero',
+];
+function isAllAchievementsUnlocked() {
+  const data = getAchievements();
+  return ALL_ACHIEVEMENT_IDS.every(id => data[id]);
+}
+
+// ---------- セーブ ----------
+const SAVE_KEY = 'marioSave';
+function loadSave() {
+  try { return JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); } catch(e) { return null; }
+}
+function saveProgress() {
+  const cur = loadSave() || {};
+  localStorage.setItem(SAVE_KEY, JSON.stringify({
+    highScore: Math.max(cur.highScore||0, score),
+    furthestStage: Math.max(cur.furthestStage||1, currentStage),
+  }));
 }
 
 // ---------- レベルデータ ----------
@@ -495,6 +522,14 @@ const STAGE_DATA = {
 };
 const TOTAL_STAGES = Object.keys(STAGE_DATA).length;
 
+const POWERUP_SPOTS = {
+  1: [{x:690,y:170,type:'star'},{x:1300,y:190,type:'mushroom'}],
+  2: [{x:585,y:170,type:'star'},{x:1610,y:200,type:'mushroom'}],
+  3: [{x:295,y:130,type:'star'},{x:2515,y:220,type:'mushroom'}],
+  4: [{x:1005,y:210,type:'star'},{x:3005,y:200,type:'mushroom'}],
+  5: [{x:1200,y:220,type:'star'}],
+};
+
 function buildLevel(stageNum) {
   const data = STAGE_DATA[stageNum]();
   if (data.movers) {
@@ -504,6 +539,12 @@ function buildLevel(stageNum) {
   data.projectiles = [];
   data.hasBoss = data.enemies.some(e => e.type === 'kingboss');
   data.bossWon = false;
+  data.enemies.forEach(e => {
+    if (e.speed) e.speed *= difficulty;
+    if (e.hopSpeed) e.hopSpeed *= difficulty;
+  });
+  data.powerups = (POWERUP_SPOTS[stageNum]||[]).map(s => ({x:s.x, y:s.y, type:s.type, r:14, taken:false}));
+  data.checkpointFlag = data.hasBoss ? null : {x: Math.round(data.levelWidth*0.5), y: GROUND_Y-56, w:20, h:56, used:false};
   return data;
 }
 
@@ -516,7 +557,15 @@ const THEMES = {
   5: { skyTop:'#160b2e', skyBottom:'#3a1f5c', groundTop:'#4a2f6b', groundBody:'#1f1030', mountain:'#2a1a45', platform:'#4a2f6b', platformTop:'#7a4fa0', deco:'embers', name:'決戦の間' },
 };
 
+const DIFF_PRESETS = {
+  easy: {mult:0.85, lives:5, label:'かんたん'},
+  normal: {mult:1.0, lives:3, label:'ふつう'},
+  hard: {mult:1.25, lives:2, label:'むずかしい'},
+};
+let difficulty = 1;
+let STARTING_LIVES = 3;
 let currentStage = 1;
+let stageCheckpoint = null;
 let level = buildLevel(currentStage);
 
 // ---------- プレイヤー ----------
@@ -528,7 +577,24 @@ function initPlayer() {
     facing:1,
     dead:false,
     invuln:0,
+    starTimer:0,
+    shieldCharge:false,
   };
+}
+function damageWithShield(fromX) {
+  if (player.shieldCharge) {
+    player.shieldCharge = false;
+    player.invuln = 70;
+    sfx('hit');
+    return;
+  }
+  player.invuln = 60;
+  lives--;
+  updateHUD();
+  sfx('hit');
+  player.vx = (player.x < fromX ? -1 : 1) * 6;
+  player.vy = -7;
+  if (lives <= 0) killPlayer();
 }
 let player = initPlayer();
 
@@ -557,7 +623,7 @@ bindTouchButton(document.getElementById('jumpBtn'), 'Space');
 
 let camX = 0;
 let score = 0, coinsCount = 0, lives = 3;
-let gameState = 'playing'; // playing, dead, win, gameover
+let gameState = 'menu'; // menu, playing, dead, win, gameover
 let jumpBuffer = false;
 let tookDamageThisStage = false;
 
@@ -581,10 +647,11 @@ function rectsOverlap(a,b) {
 }
 
 function resetLevel(fullReset) {
-  if (fullReset) { score = 0; coinsCount = 0; lives = 3; currentStage = 1; }
+  if (fullReset) { score = 0; coinsCount = 0; lives = STARTING_LIVES; currentStage = 1; stageCheckpoint = null; }
   level = buildLevel(currentStage);
   player = initPlayer();
-  camX = 0;
+  if (stageCheckpoint) { player.x = stageCheckpoint.x; player.y = stageCheckpoint.y; }
+  camX = Math.max(0, player.x - W/2);
   gameState = 'playing';
   tookDamageThisStage = false;
   msgEl.style.display = 'none';
@@ -593,6 +660,7 @@ function resetLevel(fullReset) {
 
 function nextStage() {
   currentStage++;
+  stageCheckpoint = null;
   level = buildLevel(currentStage);
   player = initPlayer();
   camX = 0;
@@ -600,6 +668,7 @@ function nextStage() {
   tookDamageThisStage = false;
   msgEl.style.display = 'none';
   updateHUD();
+  saveProgress();
 }
 
 function killPlayer() {
@@ -612,6 +681,7 @@ function killPlayer() {
     if (lives <= 0) {
       gameState = 'gameover';
       sfx('gameover');
+      saveProgress();
       showMsg('ゲームオーバー... 😵', 'もう一度挑戦');
     } else {
       resetLevel(false);
@@ -632,6 +702,51 @@ msgBtn.addEventListener('click', () => {
     resetLevel(true);
   }
 });
+
+// ---------- スタート画面(難易度選択) ----------
+const MENU_BUTTONS = [
+  {key:'easy', x:150, y:250, w:150, h:70},
+  {key:'normal', x:325, y:250, w:150, h:70},
+  {key:'hard', x:500, y:250, w:150, h:70},
+];
+function startGame(diffKey) {
+  const preset = DIFF_PRESETS[diffKey];
+  difficulty = preset.mult;
+  STARTING_LIVES = preset.lives;
+  const save = loadSave();
+  currentStage = (save && save.furthestStage) ? save.furthestStage : 1;
+  score = 0;
+  coinsCount = 0;
+  lives = STARTING_LIVES;
+  stageCheckpoint = null;
+  level = buildLevel(currentStage);
+  player = initPlayer();
+  camX = 0;
+  tookDamageThisStage = false;
+  gameState = 'playing';
+  updateHUD();
+}
+function checkMenuClick(px, py) {
+  for (const b of MENU_BUTTONS) {
+    if (px>=b.x && px<=b.x+b.w && py>=b.y && py<=b.y+b.h) { ensureAudio(); sfx('coin'); startGame(b.key); return; }
+  }
+}
+function getCanvasPos(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (clientX-r.left) * (W/r.width), y: (clientY-r.top) * (H/r.height) };
+}
+canvas.addEventListener('click', ev => {
+  if (gameState !== 'menu') return;
+  const p = getCanvasPos(ev.clientX, ev.clientY);
+  checkMenuClick(p.x, p.y);
+});
+canvas.addEventListener('touchstart', ev => {
+  if (gameState !== 'menu') return;
+  ev.preventDefault();
+  const t = ev.touches[0];
+  const p = getCanvasPos(t.clientX, t.clientY);
+  checkMenuClick(p.x, p.y);
+}, {passive:false});
 
 function update() {
   if (gameState !== 'playing') return;
@@ -721,6 +836,26 @@ function update() {
     }
   }
 
+  // --- パワーアップ ---
+  for (const pu of level.powerups) {
+    if (pu.taken) continue;
+    const pdx = (player.x+player.w/2) - pu.x, pdy = (player.y+player.h/2) - pu.y;
+    if (Math.sqrt(pdx*pdx+pdy*pdy) < pu.r + 16) {
+      pu.taken = true;
+      sfx('powerup');
+      if (pu.type === 'star') player.starTimer = 480;
+      else player.shieldCharge = true;
+    }
+  }
+  if (player.starTimer > 0) player.starTimer--;
+
+  // --- チェックポイント ---
+  if (level.checkpointFlag && !level.checkpointFlag.used && rectsOverlap(player, level.checkpointFlag)) {
+    level.checkpointFlag.used = true;
+    stageCheckpoint = {x: level.checkpointFlag.x, y: GROUND_Y-40};
+    sfx('checkpoint');
+  }
+
   // --- 敵 ---
   if (player.invuln > 0) player.invuln--;
   const livesBeforeEnemies = lives;
@@ -784,6 +919,24 @@ function update() {
     if (e.type === 'plant' && !e.visible) continue;
 
     if (!player.dead && rectsOverlap(player, e)) {
+      if (player.starTimer > 0) {
+        if (e.type === 'kingboss') {
+          if (e.invuln === 0) {
+            e.hitsRemaining--;
+            e.invuln = 70;
+            score += 300;
+            updateHUD();
+            sfx('bosshit');
+            if (e.hitsRemaining <= 0) e.alive = false;
+          }
+        } else {
+          e.alive = false;
+          score += 100;
+          updateHUD();
+          sfx('stomp');
+        }
+        continue;
+      }
       const playerBottom = player.y + player.h;
       const fallingOnTop = player.vy > 0 && (playerBottom - player.vy) <= e.y + 10;
 
@@ -799,23 +952,11 @@ function update() {
             e.alive = false;
           }
         } else if (player.invuln === 0) {
-          player.invuln = 60;
-          lives--;
-          updateHUD();
-          sfx('hit');
-          player.vx = (player.x < e.x ? -1 : 1) * 6;
-          player.vy = -7;
-          if (lives <= 0) killPlayer();
+          damageWithShield(e.x);
         }
       } else if (e.type === 'spike' || e.type === 'plant') {
         if (player.invuln === 0) {
-          player.invuln = 60;
-          lives--;
-          updateHUD();
-          sfx('hit');
-          player.vx = (player.x < e.x ? -1 : 1) * 6;
-          player.vy = -7;
-          if (lives <= 0) killPlayer();
+          damageWithShield(e.x);
         }
       } else if (e.type === 'turtle' && e.state === 'walk') {
         if (fallingOnTop) {
@@ -826,13 +967,7 @@ function update() {
           updateHUD();
           sfx('stomp');
         } else if (player.invuln === 0) {
-          player.invuln = 60;
-          lives--;
-          updateHUD();
-          sfx('hit');
-          player.vx = (player.x < e.x ? -1 : 1) * 6;
-          player.vy = -7;
-          if (lives <= 0) killPlayer();
+          damageWithShield(e.x);
         }
       } else if (e.type === 'turtle' && e.state === 'shell-idle') {
         if (fallingOnTop) {
@@ -858,13 +993,7 @@ function update() {
           updateHUD();
           sfx('stomp');
         } else if (player.invuln === 0) {
-          player.invuln = 60;
-          lives--;
-          updateHUD();
-          sfx('hit');
-          player.vx = (player.x < e.x ? -1 : 1) * 6;
-          player.vy = -7;
-          if (lives <= 0) killPlayer();
+          damageWithShield(e.x);
         }
       } else if (fallingOnTop) {
         e.alive = false;
@@ -873,15 +1002,7 @@ function update() {
         updateHUD();
         sfx('stomp');
       } else if (player.invuln === 0) {
-        player.invuln = 60;
-        lives--;
-        updateHUD();
-        sfx('hit');
-        player.vx = (player.x < e.x ? -1 : 1) * 6;
-        player.vy = -7;
-        if (lives <= 0) {
-          killPlayer();
-        }
+        damageWithShield(e.x);
       }
     }
   }
@@ -896,13 +1017,8 @@ function update() {
     level.projectiles = level.projectiles.filter(pr => pr.y < H+60 && pr.x > -60 && pr.x < level.levelWidth+60);
     for (const pr of level.projectiles) {
       if (!player.dead && player.invuln === 0 && rectsOverlap(player, {x:pr.x-8, y:pr.y-8, w:16, h:16})) {
-        player.invuln = 60;
-        lives--;
-        updateHUD();
-        sfx('hit');
-        player.vy = -7;
+        damageWithShield(pr.x);
         pr._used = true;
-        if (lives <= 0) killPlayer();
       }
     }
     level.projectiles = level.projectiles.filter(pr => !pr._used);
@@ -922,6 +1038,7 @@ function update() {
       if (!tookDamageThisStage) unlockAchievement('mario_noDamageStage', 'ノーダメージクリア');
       unlockAchievement('mario_allClear', '全ステージクリア！');
       unlockAchievement('mario_bossDefeat', '魔王カメ討伐');
+      saveProgress();
       showMsg('🎉 魔王カメを倒した！全ステージクリア！！ 🎉  SCORE: ' + score, 'もう一度最初から');
     }
   } else {
@@ -939,6 +1056,7 @@ function update() {
         gameState = 'win';
         sfx('win');
         unlockAchievement('mario_allClear', '全ステージクリア！');
+        saveProgress();
         showMsg('🎉 全ステージクリア！！ 🎉  SCORE: ' + score, 'もう一度最初から');
       }
     }
@@ -1277,31 +1395,141 @@ function drawFlag(f) {
 }
 
 function drawPlayer() {
-  if (player.invuln > 0 && Math.floor(player.invuln/4)%2===0) return; // 点滅
+  if (player.invuln > 0 && player.starTimer <= 0 && Math.floor(player.invuln/4)%2===0) return; // 点滅
   const x0 = player.x - camX;
   ctx.save();
   ctx.translate(x0+player.w/2, player.y+player.h/2);
   if (player.dead) ctx.rotate(Math.PI);
   ctx.translate(-player.w/2, -player.h/2);
+  let bodyColor = '#e63946', capColor = '#e63946';
+  if (player.starTimer > 0) {
+    const hue = (Date.now()/8) % 360;
+    bodyColor = 'hsl(' + hue + ',85%,55%)';
+    capColor = 'hsl(' + ((hue+120)%360) + ',85%,55%)';
+  } else if (isAllAchievementsUnlocked()) {
+    bodyColor = '#ffd54a'; capColor = '#e0a800';
+  }
   // 体
-  ctx.fillStyle = '#e63946';
+  ctx.fillStyle = bodyColor;
   ctx.fillRect(0, 14, player.w, player.h-14);
   // 頭
   ctx.fillStyle = '#ffd6a5';
   ctx.fillRect(4, 0, player.w-8, 16);
   // 帽子
-  ctx.fillStyle = '#e63946';
+  ctx.fillStyle = capColor;
   ctx.fillRect(0, 0, player.w, 8);
   ctx.fillRect(player.facing>0 ? player.w-6 : 0, 6, 10, 4);
   // 目
   ctx.fillStyle = '#222';
   ctx.fillRect(player.facing>0 ? player.w-10 : 4, 6, 3, 3);
+  if (player.shieldCharge) {
+    ctx.strokeStyle = 'rgba(139,255,157,0.8)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(player.w/2, player.h/2, player.w/2+8, 0, Math.PI*2);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
+function drawPowerup(pu) {
+  if (pu.taken) return;
+  const x0 = pu.x - camX;
+  const bob = Math.sin(Date.now()/220 + pu.x) * 3;
+  ctx.save();
+  ctx.translate(x0, pu.y+bob);
+  if (pu.type === 'star') {
+    ctx.fillStyle = '#ffd54a';
+    ctx.strokeStyle = '#c98f13';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i=0;i<5;i++) {
+      const ang = -Math.PI/2 + i*(Math.PI*2/5);
+      const ang2 = ang + Math.PI/5;
+      ctx.lineTo(Math.cos(ang)*13, Math.sin(ang)*13);
+      ctx.lineTo(Math.cos(ang2)*5.5, Math.sin(ang2)*5.5);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = '#e63946';
+    ctx.beginPath();
+    ctx.arc(0, -2, 12, Math.PI, 0);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(-12, -2, 24, 8);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(-6, -5, 3, 0, Math.PI*2);
+    ctx.arc(6, -8, 2.5, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawCheckpoint(cf) {
+  if (!cf) return;
+  const x0 = cf.x - camX;
+  ctx.strokeStyle = '#888';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x0, cf.y+cf.h);
+  ctx.lineTo(x0, cf.y);
+  ctx.stroke();
+  ctx.fillStyle = cf.used ? '#4fd18a' : 'rgba(255,255,255,0.5)';
+  ctx.beginPath();
+  ctx.moveTo(x0, cf.y);
+  ctx.lineTo(x0+22, cf.y+8);
+  ctx.lineTo(x0, cf.y+16);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawMenu() {
+  const grad = ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0, '#7ec0ee');
+  grad.addColorStop(1, '#cdeaff');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,W,H);
+  drawCloud(100, 80, 1.2);
+  drawCloud(600, 60, 0.9);
+  ctx.fillStyle = '#3a2a1a';
+  ctx.font = 'bold 36px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('スーパー なんちゃってマリオ', W/2, 130);
+  ctx.font = '16px sans-serif';
+  ctx.fillText('むずかしさを選んでね', W/2, 200);
+
+  const save = loadSave();
+  if (save) {
+    ctx.font = '13px sans-serif';
+    ctx.fillStyle = '#5a3a1a';
+    ctx.fillText('つづき: STAGE ' + save.furthestStage + ' から / ハイスコア ' + save.highScore, W/2, 226);
+  }
+
+  for (const b of MENU_BUTTONS) {
+    const preset = DIFF_PRESETS[b.key];
+    ctx.fillStyle = '#ffcc33';
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.strokeStyle = '#3a2a1a';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = '#2a1a08';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText(preset.label, b.x+b.w/2, b.y+30);
+    ctx.font = '12px sans-serif';
+    ctx.fillText('残機'+preset.lives, b.x+b.w/2, b.y+52);
+  }
+  ctx.font = '13px sans-serif';
+  ctx.fillStyle = '#3a2a1a';
+  ctx.fillText('← → : 移動 / Space : ジャンプ / ⭐スターは無敵 🍄キノコは1回だけ被弾防止', W/2, 360);
+}
+
 function draw() {
-  const theme = THEMES[currentStage];
   ctx.clearRect(0,0,W,H);
+  if (gameState === 'menu') { drawMenu(); return; }
+  const theme = THEMES[currentStage];
 
   // 空(ステージごとのグラデーション)
   const skyGrad = ctx.createLinearGradient(0,0,0,H);
@@ -1335,7 +1563,9 @@ function draw() {
   for (const p of level.platforms) {
     if (p.y >= GROUND_Y) drawGround(p, theme); else drawPlatform(p, theme);
   }
+  drawCheckpoint(level.checkpointFlag);
   for (const c of level.coins) drawCoin(c);
+  for (const pu of level.powerups) drawPowerup(pu);
   for (const e of level.enemies) drawEnemy(e);
   if (level.projectiles) for (const pr of level.projectiles) drawProjectile(pr);
   if (!level.hasBoss || !level.bossWon) drawFlag(level.flag);
@@ -1350,6 +1580,12 @@ function loop() {
 
 updateHUD();
 loop();
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
 </script>
 </body>
 </html>
