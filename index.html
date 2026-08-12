@@ -140,11 +140,13 @@
 <body>
 <div id="wrap">
   <div id="hud">
-    <div>❤️ <span id="lives">3</span> &nbsp; 🪙 <span id="coins">0</span> &nbsp; 🚩 STAGE <span id="stage">1</span>/4</div>
+    <div>❤️ <span id="lives">3</span> &nbsp; 🪙 <span id="coins">0</span> &nbsp; 🚩 STAGE <span id="stage">1</span>/5</div>
     <div>SCORE: <span id="score">0</span></div>
   </div>
   <div style="position:relative;">
     <canvas id="game" width="800" height="450"></canvas>
+    <button id="soundBtn" style="position:absolute; top:6px; right:6px; width:34px; height:34px; border-radius:50%; border:none; background:rgba(0,0,0,0.4); color:#fff; font-size:16px; cursor:pointer;">🔊</button>
+    <div id="achToast" style="position:absolute; top:44px; left:50%; transform:translateX(-50%); background:rgba(20,10,0,0.85); color:#ffd54a; padding:8px 16px; border-radius:8px; font-weight:bold; font-size:14px; white-space:nowrap; display:none; box-shadow:0 4px 12px rgba(0,0,0,0.4);"></div>
     <div id="msg">
       <div id="msgText"></div>
       <button id="msgBtn">もう一度</button>
@@ -169,6 +171,84 @@ const W = canvas.width, H = canvas.height;
 const GRAVITY = 0.55;
 const GROUND_Y = H - 48;
 
+// ---------- サウンド ----------
+let soundOn = localStorage.getItem('claudeGames_soundOn');
+soundOn = soundOn === null ? true : soundOn === 'true';
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { return; }
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function beep(freq, duration, type, vol, delay) {
+  if (!soundOn || !audioCtx) return;
+  const t0 = audioCtx.currentTime + (delay||0);
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type || 'square';
+  osc.frequency.setValueAtTime(freq, t0);
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(vol||0.15, t0+0.01);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0+duration);
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.start(t0); osc.stop(t0+duration+0.03);
+}
+function sfx(name) {
+  ensureAudio();
+  switch(name) {
+    case 'jump': beep(520,0.12,'square',0.12); break;
+    case 'coin': beep(880,0.07,'square',0.12); beep(1320,0.09,'square',0.1,0.06); break;
+    case 'stomp': beep(180,0.1,'square',0.16); break;
+    case 'kick': beep(300,0.08,'square',0.14); break;
+    case 'hit': beep(120,0.2,'sawtooth',0.18); break;
+    case 'death': beep(320,0.15,'sawtooth',0.15); beep(160,0.3,'sawtooth',0.15,0.15); break;
+    case 'stageclear': [660,880,1100,1320].forEach((f,i)=>beep(f,0.15,'square',0.15,i*0.12)); break;
+    case 'win': [523,659,784,1047,1319].forEach((f,i)=>beep(f,0.2,'square',0.15,i*0.14)); break;
+    case 'gameover': [300,260,220,180].forEach((f,i)=>beep(f,0.22,'sawtooth',0.15,i*0.16)); break;
+    case 'bosshit': beep(200,0.15,'square',0.2); beep(140,0.15,'square',0.18,0.08); break;
+    case 'achievement': [784,988,1175].forEach((f,i)=>beep(f,0.12,'triangle',0.14,i*0.09)); break;
+  }
+}
+const soundBtn = document.getElementById('soundBtn');
+function updateSoundBtn() { soundBtn.textContent = soundOn ? '🔊' : '🔇'; }
+updateSoundBtn();
+soundBtn.addEventListener('click', () => {
+  soundOn = !soundOn;
+  localStorage.setItem('claudeGames_soundOn', soundOn);
+  updateSoundBtn();
+  if (soundOn) { ensureAudio(); sfx('coin'); }
+});
+
+// ---------- 実績(3ゲーム共通・localStorageで共有) ----------
+const ACH_KEY = 'claudeGames_achievements';
+const STATS_KEY = 'claudeGames_stats';
+function getAchievements() {
+  try { return JSON.parse(localStorage.getItem(ACH_KEY) || '{}'); } catch(e) { return {}; }
+}
+function getStats() {
+  try { return JSON.parse(localStorage.getItem(STATS_KEY) || '{}'); } catch(e) { return {}; }
+}
+function incStat(key, amount) {
+  const s = getStats();
+  s[key] = (s[key]||0) + (amount===undefined?1:amount);
+  localStorage.setItem(STATS_KEY, JSON.stringify(s));
+  return s[key];
+}
+const achToastEl = document.getElementById('achToast');
+let achToastTimer = null;
+function unlockAchievement(id, title) {
+  const data = getAchievements();
+  if (data[id]) return;
+  data[id] = true;
+  localStorage.setItem(ACH_KEY, JSON.stringify(data));
+  sfx('achievement');
+  achToastEl.textContent = '🏆 実績解除: ' + title;
+  achToastEl.style.display = 'block';
+  clearTimeout(achToastTimer);
+  achToastTimer = setTimeout(() => { achToastEl.style.display = 'none'; }, 3000);
+}
+
 // ---------- レベルデータ ----------
 // platforms: x, y, w, h
 function makeEnemy(x, y, dir, range, speed, type) {
@@ -184,6 +264,9 @@ function spike(x, y, dir, range, speed) {
 }
 function plant(x, groundY) {
   return {x, y:groundY, baseY:groundY, hideY:groundY+42, w:26, h:42, dir:1, range:[x,x], speed:0, alive:true, type:'plant', timer:Math.floor(Math.random()*220), visible:false};
+}
+function kingboss(x, y, range) {
+  return {x, y, w:64, h:56, dir:-1, range, speed:1.0, type:'kingboss', alive:true, hitsRemaining:3, invuln:0, fireCooldown:110, chargeCooldown:240, charging:false, chargeTimer:0};
 }
 function makeCoins(arr) {
   return arr.map(c => ({...c, r:10, taken:false}));
@@ -388,6 +471,27 @@ const STAGE_DATA = {
     flag: {x:3620, y:GROUND_Y-220, w:12, h:220},
     levelWidth: 3700,
   }),
+  5: () => ({
+    // 決戦の間: ボス戦専用アリーナ
+    platforms: [
+      {x:0, y:GROUND_Y, w:1650, h:48},
+      {x:380, y:300, w:100, h:20},
+      {x:850, y:300, w:100, h:20},
+      {x:1150, y:250, w:100, h:20},
+    ],
+    coins: makeCoins([
+      {x:410,y:270},{x:440,y:270},
+      {x:880,y:270},{x:910,y:270},
+      {x:1180,y:220},{x:1210,y:220},
+    ]),
+    enemies: [
+      goomba(650, GROUND_Y-32, -1, [550,820], 2.0),
+      turtle(1000, GROUND_Y-32, 1, [900,1150], 1.8),
+      kingboss(1450, GROUND_Y-56, [1250,1560]),
+    ],
+    flag: {x:1600, y:GROUND_Y-220, w:12, h:220},
+    levelWidth: 1650,
+  }),
 };
 const TOTAL_STAGES = Object.keys(STAGE_DATA).length;
 
@@ -397,6 +501,9 @@ function buildLevel(stageNum) {
     data.platforms = data.platforms.concat(data.movers);
   }
   data.gaps = []; // 穴は platforms の切れ目で自然に発生
+  data.projectiles = [];
+  data.hasBoss = data.enemies.some(e => e.type === 'kingboss');
+  data.bossWon = false;
   return data;
 }
 
@@ -406,6 +513,7 @@ const THEMES = {
   2: { skyTop:'#ff9a5c', skyBottom:'#ffe08a', groundTop:'#d9a441', groundBody:'#8a5a2f', mountain:'#e0a44a', platform:'#c9863d', platformTop:'#f0b25a', deco:'clouds', name:'砂漠' },
   3: { skyTop:'#141a2b', skyBottom:'#343a5c', groundTop:'#5b6178', groundBody:'#2b2f42', mountain:'#3d4360', platform:'#5b6178', platformTop:'#7d84a0', deco:'stalactites', name:'洞窟' },
   4: { skyTop:'#3a0d0d', skyBottom:'#7a2222', groundTop:'#6b2b2b', groundBody:'#2c1010', mountain:'#8a2f2f', platform:'#5a3a3a', platformTop:'#a35858', deco:'embers', name:'城' },
+  5: { skyTop:'#160b2e', skyBottom:'#3a1f5c', groundTop:'#4a2f6b', groundBody:'#1f1030', mountain:'#2a1a45', platform:'#4a2f6b', platformTop:'#7a4fa0', deco:'embers', name:'決戦の間' },
 };
 
 let currentStage = 1;
@@ -427,13 +535,14 @@ let player = initPlayer();
 let keys = {};
 window.addEventListener('keydown', e => {
   keys[e.code] = true;
+  ensureAudio();
   if (['Space','ArrowUp','ArrowLeft','ArrowRight','ArrowDown'].includes(e.code)) e.preventDefault();
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
 // --- タッチ操作ボタン ---
 function bindTouchButton(el, code) {
-  const press = ev => { ev.preventDefault(); keys[code] = true; el.classList.add('pressed'); };
+  const press = ev => { ev.preventDefault(); keys[code] = true; el.classList.add('pressed'); ensureAudio(); };
   const release = ev => { if (ev) ev.preventDefault(); keys[code] = false; el.classList.remove('pressed'); };
   el.addEventListener('touchstart', press, {passive:false});
   el.addEventListener('touchend', release, {passive:false});
@@ -450,6 +559,7 @@ let camX = 0;
 let score = 0, coinsCount = 0, lives = 3;
 let gameState = 'playing'; // playing, dead, win, gameover
 let jumpBuffer = false;
+let tookDamageThisStage = false;
 
 const livesEl = document.getElementById('lives');
 const coinsEl = document.getElementById('coins');
@@ -476,6 +586,7 @@ function resetLevel(fullReset) {
   player = initPlayer();
   camX = 0;
   gameState = 'playing';
+  tookDamageThisStage = false;
   msgEl.style.display = 'none';
   updateHUD();
 }
@@ -486,6 +597,7 @@ function nextStage() {
   player = initPlayer();
   camX = 0;
   gameState = 'playing';
+  tookDamageThisStage = false;
   msgEl.style.display = 'none';
   updateHUD();
 }
@@ -495,9 +607,11 @@ function killPlayer() {
   player.dead = true;
   lives--;
   updateHUD();
+  sfx('death');
   setTimeout(() => {
     if (lives <= 0) {
       gameState = 'gameover';
+      sfx('gameover');
       showMsg('ゲームオーバー... 😵', 'もう一度挑戦');
     } else {
       resetLevel(false);
@@ -531,6 +645,7 @@ function update() {
   if ((keys['Space'] || keys['ArrowUp']) && player.onGround && !player.dead) {
     player.vy = -11.5;
     player.onGround = false;
+    sfx('jump');
   }
 
   if (!player.dead) {
@@ -600,11 +715,15 @@ function update() {
       coinsCount++;
       score += 50;
       updateHUD();
+      sfx('coin');
+      const totalCoins = incStat('marioCoinsTotal');
+      if (totalCoins >= 50) unlockAchievement('mario_coins50', 'コイン収集家(累計50枚)');
     }
   }
 
   // --- 敵 ---
   if (player.invuln > 0) player.invuln--;
+  const livesBeforeEnemies = lives;
   for (const e of level.enemies) {
     if (!e.alive) continue;
 
@@ -631,6 +750,32 @@ function update() {
       else if (t < 140) { e.y = e.baseY + Math.sin(t*0.2)*3; e.visible = true; }
       else if (t < 180) { e.y = e.baseY + (e.hideY-e.baseY)*((t-140)/40); e.visible = true; }
       else { e.y = e.hideY; e.visible = false; }
+    } else if (e.type === 'kingboss') {
+      if (e.invuln > 0) e.invuln--;
+      if (e.charging) {
+        e.x += e.dir * 5.5;
+        e.chargeTimer--;
+        if (e.chargeTimer <= 0 || e.x < e.range[0] || e.x + e.w > e.range[1]) {
+          e.charging = false;
+          e.dir *= -1;
+        }
+      } else {
+        e.x += e.dir * e.speed;
+        if (e.x < e.range[0] || e.x + e.w > e.range[1]) e.dir *= -1;
+        e.chargeCooldown--;
+        if (e.chargeCooldown <= 0) {
+          e.charging = true;
+          e.chargeTimer = 36;
+          e.chargeCooldown = 260;
+          e.dir = player.x < e.x ? -1 : 1;
+        }
+        e.fireCooldown--;
+        if (e.fireCooldown <= 0) {
+          const fdir = player.x < e.x ? -1 : 1;
+          level.projectiles.push({x:e.x+e.w/2, y:e.y+e.h/2-10, vx: fdir*3.2, vy:-7.5});
+          e.fireCooldown = 140;
+        }
+      }
     } else {
       e.x += e.dir * (e.speed || 1.5);
       if (e.x < e.range[0] || e.x + e.w > e.range[1]) e.dir *= -1;
@@ -642,11 +787,32 @@ function update() {
       const playerBottom = player.y + player.h;
       const fallingOnTop = player.vy > 0 && (playerBottom - player.vy) <= e.y + 10;
 
-      if (e.type === 'spike' || e.type === 'plant') {
+      if (e.type === 'kingboss') {
+        if (fallingOnTop && e.invuln === 0 && !e.charging) {
+          e.hitsRemaining--;
+          e.invuln = 70;
+          player.vy = -9;
+          score += 300;
+          updateHUD();
+          sfx('bosshit');
+          if (e.hitsRemaining <= 0) {
+            e.alive = false;
+          }
+        } else if (player.invuln === 0) {
+          player.invuln = 60;
+          lives--;
+          updateHUD();
+          sfx('hit');
+          player.vx = (player.x < e.x ? -1 : 1) * 6;
+          player.vy = -7;
+          if (lives <= 0) killPlayer();
+        }
+      } else if (e.type === 'spike' || e.type === 'plant') {
         if (player.invuln === 0) {
           player.invuln = 60;
           lives--;
           updateHUD();
+          sfx('hit');
           player.vx = (player.x < e.x ? -1 : 1) * 6;
           player.vy = -7;
           if (lives <= 0) killPlayer();
@@ -658,10 +824,12 @@ function update() {
           player.vy = -8;
           score += 100;
           updateHUD();
+          sfx('stomp');
         } else if (player.invuln === 0) {
           player.invuln = 60;
           lives--;
           updateHUD();
+          sfx('hit');
           player.vx = (player.x < e.x ? -1 : 1) * 6;
           player.vy = -7;
           if (lives <= 0) killPlayer();
@@ -672,11 +840,15 @@ function update() {
           player.vy = -8;
           score += 150;
           updateHUD();
+          sfx('stomp');
         } else if (player.invuln === 0) {
           e.state = 'shell-kicked';
           e.dir = player.x < e.x ? 1 : -1;
           score += 50;
           updateHUD();
+          sfx('kick');
+          const kicks = incStat('marioShellKicks');
+          if (kicks >= 5) unlockAchievement('mario_kicks5', 'カメ退治マスター(シェルキック5回)');
         }
       } else if (e.type === 'turtle' && e.state === 'shell-kicked') {
         if (fallingOnTop) {
@@ -684,10 +856,12 @@ function update() {
           player.vy = -8;
           score += 150;
           updateHUD();
+          sfx('stomp');
         } else if (player.invuln === 0) {
           player.invuln = 60;
           lives--;
           updateHUD();
+          sfx('hit');
           player.vx = (player.x < e.x ? -1 : 1) * 6;
           player.vy = -7;
           if (lives <= 0) killPlayer();
@@ -697,10 +871,12 @@ function update() {
         player.vy = -8;
         score += 100;
         updateHUD();
+        sfx('stomp');
       } else if (player.invuln === 0) {
         player.invuln = 60;
         lives--;
         updateHUD();
+        sfx('hit');
         player.vx = (player.x < e.x ? -1 : 1) * 6;
         player.vy = -7;
         if (lives <= 0) {
@@ -710,17 +886,61 @@ function update() {
     }
   }
 
+  // --- ボスの火球 ---
+  if (level.projectiles && level.projectiles.length) {
+    for (const pr of level.projectiles) {
+      pr.vy += GRAVITY * 0.6;
+      pr.x += pr.vx;
+      pr.y += pr.vy;
+    }
+    level.projectiles = level.projectiles.filter(pr => pr.y < H+60 && pr.x > -60 && pr.x < level.levelWidth+60);
+    for (const pr of level.projectiles) {
+      if (!player.dead && player.invuln === 0 && rectsOverlap(player, {x:pr.x-8, y:pr.y-8, w:16, h:16})) {
+        player.invuln = 60;
+        lives--;
+        updateHUD();
+        sfx('hit');
+        player.vy = -7;
+        pr._used = true;
+        if (lives <= 0) killPlayer();
+      }
+    }
+    level.projectiles = level.projectiles.filter(pr => !pr._used);
+  }
+
+  if (lives < livesBeforeEnemies) tookDamageThisStage = true;
+
   // --- ゴール判定 ---
-  const flag = level.flag;
-  if (player.x > flag.x) {
-    score += 500;
-    updateHUD();
-    if (currentStage < TOTAL_STAGES) {
-      gameState = 'stageclear';
-      showMsg('🚩 STAGE ' + currentStage + ' クリア！ 🚩', '次のステージへ');
-    } else {
+  if (level.hasBoss) {
+    const bossAlive = level.enemies.some(e => e.type === 'kingboss' && e.alive);
+    if (!bossAlive && !level.bossWon) {
+      level.bossWon = true;
+      score += 1000;
+      updateHUD();
       gameState = 'win';
-      showMsg('🎉 全ステージクリア！！ 🎉  SCORE: ' + score, 'もう一度最初から');
+      sfx('win');
+      if (!tookDamageThisStage) unlockAchievement('mario_noDamageStage', 'ノーダメージクリア');
+      unlockAchievement('mario_allClear', '全ステージクリア！');
+      unlockAchievement('mario_bossDefeat', '魔王カメ討伐');
+      showMsg('🎉 魔王カメを倒した！全ステージクリア！！ 🎉  SCORE: ' + score, 'もう一度最初から');
+    }
+  } else {
+    const flag = level.flag;
+    if (player.x > flag.x) {
+      score += 500;
+      updateHUD();
+      if (!tookDamageThisStage) unlockAchievement('mario_noDamageStage', 'ノーダメージクリア');
+      if (currentStage < TOTAL_STAGES) {
+        gameState = 'stageclear';
+        sfx('stageclear');
+        if (currentStage === 1) unlockAchievement('mario_stage1', '初めの一歩');
+        showMsg('🚩 STAGE ' + currentStage + ' クリア！ 🚩', '次のステージへ');
+      } else {
+        gameState = 'win';
+        sfx('win');
+        unlockAchievement('mario_allClear', '全ステージクリア！');
+        showMsg('🎉 全ステージクリア！！ 🎉  SCORE: ' + score, 'もう一度最初から');
+      }
     }
   }
 
@@ -809,7 +1029,71 @@ function drawEnemy(e) {
   else if (e.type === 'bat') drawBat(e);
   else if (e.type === 'spike') drawSpike(e);
   else if (e.type === 'plant') drawPlant(e);
+  else if (e.type === 'kingboss') drawKingBoss(e);
   else drawGoomba(e);
+}
+
+function drawKingBoss(e) {
+  const x0 = e.x - camX;
+  const cx = x0 + e.w/2, cy = e.y + e.h/2;
+  const squash = e.invuln > 0 ? 1 - 0.12*Math.min(1, e.invuln/60) : 1;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(1, squash);
+  ctx.fillStyle = e.charging ? '#7a1f9b' : '#4a1f6b';
+  ctx.beginPath();
+  ctx.ellipse(0, 4, e.w/2, e.h/2-4, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#2e1245';
+  for (let i=-2;i<=2;i++) {
+    ctx.beginPath();
+    ctx.moveTo(i*13, -e.h/2+10);
+    ctx.lineTo(i*13-6, -e.h/2-6);
+    ctx.lineTo(i*13+6, -e.h/2-6);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.fillStyle = '#ffd54a';
+  ctx.beginPath();
+  ctx.moveTo(-15,-e.h/2-2); ctx.lineTo(-15,-e.h/2-16); ctx.lineTo(-7,-e.h/2-5);
+  ctx.lineTo(0,-e.h/2-18); ctx.lineTo(7,-e.h/2-5); ctx.lineTo(15,-e.h/2-16); ctx.lineTo(15,-e.h/2-2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#ff5c3d';
+  ctx.beginPath();
+  ctx.arc(-13,-2,5,0,Math.PI*2); ctx.arc(13,-2,5,0,Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.arc(-13,-2,2,0,Math.PI*2); ctx.arc(13,-2,2,0,Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+
+  // HPバー(画面固定表示)
+  const pct = Math.max(0, e.hitsRemaining/3);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(W/2-100, 16, 200, 14);
+  ctx.fillStyle = pct > 0.34 ? '#4fd18a' : '#ff5c5c';
+  ctx.fillRect(W/2-100, 16, 200*pct, 14);
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(W/2-100, 16, 200, 14);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('魔王カメ', W/2, 12);
+}
+
+function drawProjectile(pr) {
+  const x0 = pr.x - camX;
+  ctx.fillStyle = '#ff6b1a';
+  ctx.beginPath();
+  ctx.arc(x0, pr.y, 9, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#ffd54a';
+  ctx.beginPath();
+  ctx.arc(x0, pr.y, 4, 0, Math.PI*2);
+  ctx.fill();
 }
 
 function drawBat(e) {
@@ -1053,7 +1337,8 @@ function draw() {
   }
   for (const c of level.coins) drawCoin(c);
   for (const e of level.enemies) drawEnemy(e);
-  drawFlag(level.flag);
+  if (level.projectiles) for (const pr of level.projectiles) drawProjectile(pr);
+  if (!level.hasBoss || !level.bossWon) drawFlag(level.flag);
   drawPlayer();
 }
 
